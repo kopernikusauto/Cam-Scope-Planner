@@ -1,0 +1,7 @@
+--extra-index-url https://"${ARTIFACTORY_USER}":"${ARTIFACTORY_TOKEN}"@kpns.jfrog.io/artifactory/api/pypi/kpnsdev-pypi-local/simple
+#shapely
+#absl-py
+mlcommon==1.0.5
+#tqdm
+#numpy
+#opencv-python
