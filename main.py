@@ -28,62 +28,63 @@ flags.DEFINE_string('map', "/home/huzaifa/Kopernikus/ml-envs-config/0012-avm5/ma
 
 #helpers
 
-
-def generate_random_roi_polygon(center_x: float, center_y: float) -> List[List[List[float]]]:
-    """Generate a fixed ROI polygon translated near the given center_x and center_y."""
-
-    # Fixed polygon points
-    base_points = [[[573, 400], [524, 226], [941, 320], [925, 393], [979, 452]]]
+def generate_random_roi_polygon(center_x: float, center_y: float, scale: float = 5.0) -> List[List[List[float]]]:
+    """Generate a larger trapezoid-shaped ROI polygon in camera-view coordinates.
     
-    # Calculate the original center of the fixed polygon
-    original_center_x = sum(point[0] for point in base_points[0]) / len(base_points[0])
-    original_center_y = sum(point[1] for point in base_points[0]) / len(base_points[0])
+    Args:
+        center_x: Camera x position in global coordinates
+        center_y: Camera y position in global coordinates
+        scale: Scaling factor to adjust the size of the trapezoid
     
-    # Calculate the offsets to move the polygon near the given center
-    offset_x = center_x - original_center_x
-    offset_y = center_y - original_center_y
-    
-    # Move each point by the calculated offsets
-    translated_points = [
-        [[point[0] + offset_x, point[1] + offset_y] for point in polygon]
-        for polygon in base_points
+    Returns:
+        List of polygon points that will be transformed by the camera matrix
+    """
+    # Define trapezoid points relative to the center, scaled by the factor
+    base_points = [
+        [center_x - 15 * scale, center_y + 50*scale],  # Bottom-left
+        [center_x + 15 * scale, center_y + 50*scale],  # Bottom-right
+        [center_x + 10 * scale, center_y + 25*scale],   # Top-right
+        [center_x - 10 * scale, center_y + 25*scale]    # Top-left
     ]
     
-    return translated_points
+    # Return in the expected nested list format
+    return [base_points]
+
 
 
 def update_roi_position(roi: List[List[List[float]]], dx: float, dy: float) -> List[List[List[float]]]:
-    """Update ROI polygon position by moving it by dx, dy."""
+    """Update ROI polygon position by moving it by dx, dy in global coordinates."""
     return [[[point[0] + dx, point[1] + dy] for point in zone] 
             for zone in roi]
 
 @dataclass
 class CameraParams:
     """Store camera parameters including orientation."""
-    cam_id: str
-    matrix: List[np.ndarray]
-    ego_roi_poly: List[List[List[float]]]
-    original_ego_roi_poly: List[List[List[float]]]
-    global_angle: float
-    cam_x: float
-    cam_y: float
-    pitch: float = 0.0
-    roll: float = 0.0
-    yaw: float = 0.0  # Added yaw parameter
-    color: Tuple[int, int, int] = (0, 0, 255)
-    has_roi: bool = False 
-
-    def __post_init__(self):
-        """Initialize additional attributes after creation."""
+    def __init__(self, cam_id: str, matrix: List[np.ndarray], ego_roi_poly: List[List[List[float]]],
+                 original_ego_roi_poly: List[List[List[float]]], global_angle: float,
+                 cam_x: float, cam_y: float, pitch: float = 0.0, roll: float = 0.0,
+                 yaw: float = 0.0, color: Tuple[int, int, int] = (0, 0, 255),
+                 has_roi: bool = False):
+        self.cam_id = cam_id
+        self.matrix = matrix
+        self.ego_roi_poly = ego_roi_poly
         self.original_ego_roi_poly = [
-            [list(point) for point in zone] for zone in self.ego_roi_poly
+            [list(point) for point in zone] for zone in ego_roi_poly
         ]
-        self.original_cam_x = self.cam_x
-        self.original_cam_y = self.cam_y
+        self.global_angle = global_angle
+        self.cam_x = cam_x
+        self.cam_y = cam_y
+        self.original_cam_x = cam_x
+        self.original_cam_y = cam_y
+        self.pitch = pitch
+        self.roll = roll
+        self.yaw = yaw
+        self.color = color
+        self.has_roi = has_roi
         self.transformed_points = self.calculate_transformed_points()
 
     def calculate_transformed_points(self) -> List[List[Tuple[int, int]]]:
-        """Pre-calculate transformed points for all zones using proper RPY order."""
+        """Pre-calculate transformed points for all zones."""
         transformed = []
         for zone_id in range(len(self.ego_roi_poly)):
             zone_points = []
@@ -92,36 +93,36 @@ class CameraParams:
                 rel_x = point[0] - self.original_cam_x
                 rel_y = point[1] - self.original_cam_y
                 
-                # Convert angles to radians
-                roll_rad = math.radians(self.roll)
-                pitch_rad = math.radians(self.pitch)
+                # Apply yaw rotation first (around Z-axis)
                 yaw_rad = math.radians(self.yaw)
+                x_yaw = rel_x * math.cos(yaw_rad) - rel_y * math.sin(yaw_rad)
+                y_yaw = rel_x * math.sin(yaw_rad) + rel_y * math.cos(yaw_rad)
                 
-                # Apply roll first (around X-axis)
-                y_roll = rel_y * math.cos(roll_rad) - rel_y * math.sin(roll_rad)
-                z_roll = rel_y * math.sin(roll_rad) + rel_y * math.cos(roll_rad)
-                
-                # Apply pitch second (around Y-axis)
-                x_pitch = rel_x * math.cos(pitch_rad) + z_roll * math.sin(pitch_rad)
-                z_pitch = -rel_x * math.sin(pitch_rad) + z_roll * math.cos(pitch_rad)
-                
-                # Apply yaw last (around Z-axis)
-                x_final = x_pitch * math.cos(yaw_rad) - y_roll * math.sin(yaw_rad)
-                y_final = x_pitch * math.sin(yaw_rad) + y_roll * math.cos(yaw_rad)
-                
-                # Project back to 2D plane and translate to current camera position
-                final_x = x_final + self.cam_x
-                final_y = y_final + self.cam_y
+                # Then apply pitch (around X-axis) and roll (around Y-axis)
+                if self.pitch != 0 or self.roll != 0:
+                    pitch_rad = math.radians(self.pitch)
+                    roll_rad = math.radians(self.roll)
+                    
+                    x_rot = (x_yaw * math.cos(pitch_rad) + 
+                            y_yaw * math.sin(roll_rad) * math.sin(pitch_rad))
+                    y_rot = (y_yaw * math.cos(roll_rad) - 
+                            x_yaw * math.sin(pitch_rad))
+                    
+                    x_yaw, y_yaw = x_rot, y_rot
+
+                # Translate back to current camera position
+                final_x = x_yaw + self.cam_x
+                final_y = y_yaw + self.cam_y
                 
                 zone_points.append((round(final_x), round(final_y)))
             transformed.append(zone_points)
         return transformed
 
-
-    def update_orientation(self, pitch: float, roll: float, yaw: float):
-        """Update camera orientation and recalculate ROI points."""
+    def update_orientation(self, pitch: float, roll: float, yaw: float) -> bool:
+        """Update camera orientation and recalculate transformed points."""
         if self.pitch == pitch and self.roll == roll and self.yaw == yaw:
             return False
+            
         self.pitch = pitch
         self.roll = roll
         self.yaw = yaw
@@ -322,11 +323,11 @@ class CoverageViewer(QMainWindow):
         self.add_camera_button.clicked.connect(self.add_new_camera)
         control_layout.addWidget(self.add_camera_button)
 
-        # # Add Generate ROI button
-        # self.generate_roi_button = QPushButton("Generate ROI for Camera")
-        # self.generate_roi_button.clicked.connect(self.generate_roi_for_camera)
-        # self.generate_roi_button.setEnabled(False)  # Disabled by default
-        # control_layout.addWidget(self.generate_roi_button)
+        # Add Generate ROI button
+        self.generate_roi_button = QPushButton("Generate ROI for Camera")
+        self.generate_roi_button.clicked.connect(self.generate_roi_for_camera)
+        self.generate_roi_button.setEnabled(False)  # Disabled by default
+        control_layout.addWidget(self.generate_roi_button)
 
         # Add Delete Camera button
         self.delete_camera_button = QPushButton("Delete Selected Camera")
@@ -509,7 +510,7 @@ class CoverageViewer(QMainWindow):
         if not active_cam_text:
             return
             
-        cam_id = int(self.active_camera_selector.currentText().split()[-1])
+        cam_id = int(active_cam_text.split()[-1])
         camera = self.analyzer.cameras[cam_id]
         
         if param == 'pitch':
@@ -522,22 +523,12 @@ class CoverageViewer(QMainWindow):
             self.yaw_label.setText(f'Yaw: {value}°')
             camera.update_orientation(camera.pitch, camera.roll, value)
         elif param == 'x':
-            # Calculate movement delta
-            dx = value - camera.cam_x
             self.x_label.setText(f'X: {value}')
             camera.cam_x = value
-            # Update ROI polygon position
-            camera.ego_roi_poly = update_roi_position(camera.ego_roi_poly, dx, 0)
-            camera.original_ego_roi_poly = camera.ego_roi_poly
             camera.transformed_points = camera.calculate_transformed_points()
         elif param == 'y':
-            # Calculate movement delta
-            dy = value - camera.cam_y
             self.y_label.setText(f'Y: {value}')
             camera.cam_y = value
-            # Update ROI polygon position
-            camera.ego_roi_poly = update_roi_position(camera.ego_roi_poly, 0, dy)
-            camera.original_ego_roi_poly = camera.ego_roi_poly
             camera.transformed_points = camera.calculate_transformed_points()
         
         self.update_coverage_map()
@@ -612,33 +603,33 @@ class CoverageViewer(QMainWindow):
 
 
     def add_new_camera(self):
-        """Add a new camera with automatically generated ROI polygon."""
+        """Add a new camera with appropriate default parameters."""
         new_id = max(self.analyzer.cameras.keys()) + 1 if self.analyzer.cameras else 0
         default_x = self.map_width // 2
         default_y = self.map_height // 2
         
-        # Create base polygon at the center
-        base_polygon = [[[0, -100], [-150, 100], [150, 100]]]  # Triangle shape
+        # Create default transformation matrix for top-down view
+        # This creates a basic identity transform that can be adjusted later
+        default_matrix = [np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        ])]
         
-        # Move polygon points relative to camera position
-        moved_polygon = [[[point[0] + default_x, point[1] + default_y] for point in zone] 
-                        for zone in base_polygon]
-        
-        template_camera = next(iter(self.analyzer.cameras.values())) if self.analyzer.cameras else None
-        
+        # Create new camera with default parameters
         new_camera = CameraParams(
             cam_id=str(new_id),
-            matrix=[np.eye(3)] if template_camera is None else template_camera.matrix.copy(),
-            ego_roi_poly=moved_polygon,
-            original_ego_roi_poly=moved_polygon.copy(),
-            global_angle=0,
+            matrix=default_matrix,  # Use default matrix
+            ego_roi_poly=[[]],  # Empty ROI
+            original_ego_roi_poly=[[]],  # Empty ROI
+            global_angle=0,  # Default forward direction
             cam_x=default_x,
             cam_y=default_y,
             pitch=0,
             roll=0,
             yaw=0,
             color=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)),
-            has_roi=True  # ROI is automatically created
+            has_roi=False
         )
         
         self.analyzer.cameras[new_id] = new_camera
@@ -660,9 +651,9 @@ class CoverageViewer(QMainWindow):
         
         # Enable controls
         self.slider_group.setEnabled(True)
+        self.generate_roi_button.setEnabled(True)
         
         self.update_coverage_map()
-
 
     def generate_roi_for_camera(self):
         """Generate ROI for the currently selected camera."""
