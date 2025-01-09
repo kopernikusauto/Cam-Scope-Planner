@@ -28,7 +28,8 @@ flags.DEFINE_string('map', "/home/huzaifa/Kopernikus/ml-envs-config/0012-avm5/ma
 
 #helpers
 
-def generate_random_roi_polygon(center_x: float, center_y: float, scale: float = 5.0) -> List[List[List[float]]]:
+
+def generate_random_roi_polygon(center_x: float, center_y: float, scale: float = 8.0) -> List[List[List[float]]]:
     """Generate a larger trapezoid-shaped ROI polygon in camera-view coordinates.
     
     Args:
@@ -41,10 +42,10 @@ def generate_random_roi_polygon(center_x: float, center_y: float, scale: float =
     """
     # Define trapezoid points relative to the center, scaled by the factor
     base_points = [
-        [center_x - 15 * scale, center_y + 50*scale],  # Bottom-left
-        [center_x + 15 * scale, center_y + 50*scale],  # Bottom-right
-        [center_x + 10 * scale, center_y + 25*scale],   # Top-right
-        [center_x - 10 * scale, center_y + 25*scale]    # Top-left
+        [center_x - 15 * scale, center_y + 30*scale],  # Bottom-left
+        [center_x + 15 * scale, center_y + 30*scale],  # Bottom-right
+        [center_x + 10 * scale, center_y + 7*scale],   # Top-right
+        [center_x - 10 * scale, center_y + 7*scale]    # Top-left
     ]
     
     # Return in the expected nested list format
@@ -67,6 +68,7 @@ class CameraParams:
                  has_roi: bool = False):
         self.cam_id = cam_id
         self.matrix = matrix
+        print("matrix of cam {f} is {f} ", self.cam_id, self.matrix)
         self.ego_roi_poly = ego_roi_poly
         self.original_ego_roi_poly = [
             [list(point) for point in zone] for zone in ego_roi_poly
@@ -84,11 +86,17 @@ class CameraParams:
         self.transformed_points = self.calculate_transformed_points()
 
     def calculate_transformed_points(self) -> List[List[Tuple[int, int]]]:
-        """Pre-calculate transformed points for all zones."""
+        """Pre-calculate transformed points, using outermost points for multi-zone ROIs."""
         transformed = []
-        for zone_id in range(len(self.ego_roi_poly)):
-            zone_points = []
-            for point in self.original_ego_roi_poly[zone_id]:
+        
+        # Special handling for empty ROIs
+        if not self.original_ego_roi_poly or not self.original_ego_roi_poly[0]:
+            return [[]]
+
+        # For newly generated ROIs (single polygon, no zones)
+        if len(self.original_ego_roi_poly) == 1:
+            points = []
+            for point in self.original_ego_roi_poly[0]:
                 # Get the point relative to the original camera position
                 rel_x = point[0] - self.original_cam_x
                 rel_y = point[1] - self.original_cam_y
@@ -114,8 +122,62 @@ class CameraParams:
                 final_x = x_yaw + self.cam_x
                 final_y = y_yaw + self.cam_y
                 
-                zone_points.append((round(final_x), round(final_y)))
-            transformed.append(zone_points)
+                points.append((round(final_x), round(final_y)))
+            transformed.append(points)
+            return transformed
+
+        # For existing ROIs with multiple zones
+        # Get all points from all zones
+        all_points = []
+        for zone in self.original_ego_roi_poly:
+            all_points.extend(zone)
+            
+        # Find the outermost points
+        if all_points:
+            # Convert points to numpy array for easier computation
+            points_array = np.array(all_points)
+            
+            # Find the convex hull of all points
+            hull = cv2.convexHull(points_array.astype(np.float32))
+            outermost_points = hull.squeeze().tolist()
+            
+            # Transform the outermost points
+            transformed_points = []
+            for point in outermost_points:
+                # Handle both list and float cases
+                if isinstance(point, list):
+                    px, py = point[0], point[1]
+                else:
+                    px, py = point
+                    
+                rel_x = px - self.original_cam_x
+                rel_y = py - self.original_cam_y
+                
+                # Apply yaw rotation
+                yaw_rad = math.radians(self.yaw)
+                x_yaw = rel_x * math.cos(yaw_rad) - rel_y * math.sin(yaw_rad)
+                y_yaw = rel_x * math.sin(yaw_rad) + rel_y * math.cos(yaw_rad)
+                
+                # Apply pitch and roll
+                if self.pitch != 0 or self.roll != 0:
+                    pitch_rad = math.radians(self.pitch)
+                    roll_rad = math.radians(self.roll)
+                    
+                    x_rot = (x_yaw * math.cos(pitch_rad) + 
+                            y_yaw * math.sin(roll_rad) * math.sin(pitch_rad))
+                    y_rot = (y_yaw * math.cos(roll_rad) - 
+                            x_yaw * math.sin(pitch_rad))
+                    
+                    x_yaw, y_yaw = x_rot, y_rot
+
+                # Translate to current position
+                final_x = x_yaw + self.cam_x
+                final_y = y_yaw + self.cam_y
+                
+                transformed_points.append((round(final_x), round(final_y)))
+            
+            transformed.append(transformed_points)
+        
         return transformed
 
     def update_orientation(self, pitch: float, roll: float, yaw: float) -> bool:
