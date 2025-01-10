@@ -61,16 +61,16 @@ def update_roi_position(roi: List[List[List[float]]], dx: float, dy: float) -> L
 @dataclass
 class CameraParams:
     """Store camera parameters including orientation."""
-    def __init__(self, cam_id: str, matrix: List[np.ndarray], ego_roi_poly: List[List[List[float]]],
-                 original_ego_roi_poly: List[List[List[float]]], global_angle: float,
-                 cam_x: float, cam_y: float, pitch: float = 0.0, roll: float = 0.0,
-                 yaw: float = 0.0, color: Tuple[int, int, int] = (0, 0, 255),
+    def __init__(self, cam_id: str, matrix: List[np.ndarray], roi_points: List[List[List[float]]],
+                 global_angle: float, cam_x: float, cam_y: float, pitch: float = 0.0, 
+                 roll: float = 0.0, yaw: float = 0.0, 
+                 color: Tuple[int, int, int] = (0, 0, 255),
                  has_roi: bool = False):
         self.cam_id = cam_id
-        self.matrix = matrix
-        self.ego_roi_poly = ego_roi_poly
-        self.original_ego_roi_poly = [
-            [list(point) for point in zone] for zone in ego_roi_poly
+        self.matrix = matrix  # Keep for compatibility
+        self.roi_points = roi_points
+        self.original_roi_points = [
+            [[point[0], point[1]] for point in zone] for zone in roi_points
         ]
         self.global_angle = global_angle
         self.cam_x = cam_x
@@ -85,17 +85,17 @@ class CameraParams:
         self.transformed_points = self.calculate_transformed_points()
 
     def calculate_transformed_points(self) -> List[List[Tuple[int, int]]]:
-        """Pre-calculate transformed points, using outermost points for multi-zone ROIs."""
+        """Pre-calculate transformed points from roi_points."""
         transformed = []
         
         # Special handling for empty ROIs
-        if not self.original_ego_roi_poly or not self.original_ego_roi_poly[0]:
+        if not self.original_roi_points or not self.original_roi_points[0]:
             return [[]]
 
-        # For newly generated ROIs (single polygon, no zones)
-        if len(self.original_ego_roi_poly) == 1:
+        # For newly generated ROIs (single polygon)
+        if len(self.original_roi_points) == 1:
             points = []
-            for point in self.original_ego_roi_poly[0]:
+            for point in self.original_roi_points[0]:
                 # Get the point relative to the original camera position
                 rel_x = point[0] - self.original_cam_x
                 rel_y = point[1] - self.original_cam_y
@@ -125,39 +125,18 @@ class CameraParams:
             transformed.append(points)
             return transformed
 
-        # For existing ROIs with multiple zones
-        # Get all points from all zones
-        all_points = []
-        for zone in self.original_ego_roi_poly:
-            all_points.extend(zone)
-            
-        # Find the outermost points
-        if all_points:
-            # Convert points to numpy array for easier computation
-            points_array = np.array(all_points)
-            
-            # Find the convex hull of all points
-            hull = cv2.convexHull(points_array.astype(np.float32))
-            outermost_points = hull.squeeze().tolist()
-            
-            # Transform the outermost points
-            transformed_points = []
-            for point in outermost_points:
-                # Handle both list and float cases
-                if isinstance(point, list):
-                    px, py = point[0], point[1]
-                else:
-                    px, py = point
-                    
-                rel_x = px - self.original_cam_x
-                rel_y = py - self.original_cam_y
+        # For ROIs with multiple zones, handle each zone
+        for zone in self.original_roi_points:
+            transformed_zone = []
+            for point in zone:
+                rel_x = point[0] - self.original_cam_x
+                rel_y = point[1] - self.original_cam_y
                 
-                # Apply yaw rotation
+                # Apply transformations as above
                 yaw_rad = math.radians(self.yaw)
                 x_yaw = rel_x * math.cos(yaw_rad) - rel_y * math.sin(yaw_rad)
                 y_yaw = rel_x * math.sin(yaw_rad) + rel_y * math.cos(yaw_rad)
                 
-                # Apply pitch and roll
                 if self.pitch != 0 or self.roll != 0:
                     pitch_rad = math.radians(self.pitch)
                     roll_rad = math.radians(self.roll)
@@ -169,16 +148,13 @@ class CameraParams:
                     
                     x_yaw, y_yaw = x_rot, y_rot
 
-                # Translate to current position
                 final_x = x_yaw + self.cam_x
                 final_y = y_yaw + self.cam_y
                 
-                transformed_points.append((round(final_x), round(final_y)))
-            
-            transformed.append(transformed_points)
+                transformed_zone.append((round(final_x), round(final_y)))
+            transformed.append(transformed_zone)
         
         return transformed
-
 
     def update_orientation(self, pitch: float, roll: float, yaw: float) -> bool:
         """Update camera orientation and recalculate transformed points."""
@@ -682,8 +658,7 @@ class CoverageViewer(QMainWindow):
         new_camera = CameraParams(
             cam_id=str(new_id),
             matrix=default_matrix,  # Use default matrix
-            ego_roi_poly=[[]],  # Empty ROI
-            original_ego_roi_poly=[[]],  # Empty ROI
+            roi_points=[[]],  # Empty ROI points
             global_angle=0,  # Default forward direction
             cam_x=default_x,
             cam_y=default_y,
@@ -730,10 +705,10 @@ class CoverageViewer(QMainWindow):
         new_roi = generate_random_roi_polygon(camera.cam_x, camera.cam_y)
         
         # Update camera with new ROI
-        camera.ego_roi_poly = new_roi
-        camera.original_ego_roi_poly = [
-            [list(point) for point in zone] for zone in new_roi
-        ]
+        # Convert the 2D points to 3D points with a default Z value of 0
+        roi_points = [[[point[0], point[1], 0.0] for point in zone] for zone in new_roi]
+        camera.roi_points = roi_points
+        camera.original_roi_points = [[[p[0], p[1], p[2]] for p in zone] for zone in roi_points]
         camera.has_roi = True
         camera.transformed_points = camera.calculate_transformed_points()
         
@@ -888,20 +863,13 @@ class CoverageAnalyzer:
                 self.cameras[cam_id] = CameraParams(
                     cam_id=cam_id,
                     matrix=params["matrix"],
-                    ego_roi_poly=params["ego_roi_poly"],
-                    original_ego_roi_poly=params["ego_roi_poly"],
+                    roi_points=params["roi_points"],
                     global_angle=params["global_angle"],
                     cam_x=params["cam_x"],
                     cam_y=params["cam_y"],
                     color=colors[color_idx]
                 )
                 color_idx += 1
-
-    @staticmethod
-    def reproject_to_global_map_coords(x: float, y: float, matrix: np.ndarray) -> Tuple[float, float]:
-        """Convert local coordinates to global map coordinates."""
-        res = np.dot(matrix, [x, y, 1])
-        return round(res[0] / res[2], 4), round(res[1] / res[2], 4)
 
     def create_coverage_map(self, selected_cameras: Set[str]) -> np.ndarray:
         """Create the coverage visualization map."""
@@ -916,16 +884,15 @@ class CoverageAnalyzer:
             camera = self.cameras[int(cam_id)]
             local_overlay = np.zeros_like(self.base_map)
             
-            for zone_id, points in enumerate(camera.transformed_points):
-                projected_points = []
+            for points in camera.transformed_points:
+                # Convert points to pixel coordinates
+                pixel_points = []
                 for x, y in points:
-                    map_x, map_y = self.reproject_to_global_map_coords(
-                        x, y, camera.matrix[zone_id])
-                    if 0 <= map_x < self.width and 0 <= map_y < self.height:
-                        projected_points.append((int(map_x), int(map_y)))
+                    if 0 <= x < self.width and 0 <= y < self.height:
+                        pixel_points.append((int(x), int(y)))
 
-                if len(projected_points) > 2:
-                    cv2.fillPoly(local_overlay, [np.array(projected_points)], 
+                if len(pixel_points) > 2:
+                    cv2.fillPoly(local_overlay, [np.array(pixel_points)], 
                                camera.color)
 
             overlay = cv2.addWeighted(overlay, 1, local_overlay, 0.6, 0)
@@ -933,31 +900,22 @@ class CoverageAnalyzer:
         result = cv2.addWeighted(result, 0.7, overlay, 0.6, 0)
         return result
 
-
-
     def calculate_coverage_overlap(self, selected_cameras: Set[str]) -> np.ndarray:
-        """
-        Calculate the number of cameras covering each pixel.
-        
-        Returns:
-            np.ndarray: 2D array with the number of cameras covering each pixel
-        """
+        """Calculate the number of cameras covering each pixel."""
         overlap_map = np.zeros((self.height, self.width), dtype=np.uint8)
         
         for cam_id in selected_cameras:
             camera = self.cameras[int(cam_id)]
             local_mask = np.zeros((self.height, self.width), dtype=np.uint8)
             
-            for zone_id, points in enumerate(camera.transformed_points):
-                projected_points = []
+            for points in camera.transformed_points:
+                pixel_points = []
                 for x, y in points:
-                    map_x, map_y = self.reproject_to_global_map_coords(
-                        x, y, camera.matrix[zone_id])
-                    if 0 <= map_x < self.width and 0 <= map_y < self.height:
-                        projected_points.append((int(map_x), int(map_y)))
+                    if 0 <= x < self.width and 0 <= y < self.height:
+                        pixel_points.append((int(x), int(y)))
 
-                if len(projected_points) > 2:
-                    cv2.fillPoly(local_mask, [np.array(projected_points)], 255)
+                if len(pixel_points) > 2:
+                    cv2.fillPoly(local_mask, [np.array(pixel_points)], 255)
             
             overlap_map += local_mask // 255
         
