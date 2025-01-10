@@ -68,7 +68,6 @@ class CameraParams:
                  has_roi: bool = False):
         self.cam_id = cam_id
         self.matrix = matrix
-        print("matrix of cam {f} is {f} ", self.cam_id, self.matrix)
         self.ego_roi_poly = ego_roi_poly
         self.original_ego_roi_poly = [
             [list(point) for point in zone] for zone in ego_roi_poly
@@ -179,6 +178,7 @@ class CameraParams:
             transformed.append(transformed_points)
         
         return transformed
+
 
     def update_orientation(self, pitch: float, roll: float, yaw: float) -> bool:
         """Update camera orientation and recalculate transformed points."""
